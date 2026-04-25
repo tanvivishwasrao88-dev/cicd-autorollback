@@ -1,93 +1,43 @@
 pipeline {
     agent any
-
     environment {
-       IMAGE_NAME = "myapp"
+        IMAGE_NAME = "myapp"
         CONTAINER_NAME = "myapp-live"
-        SLACK_WEBHOOK = "SLACK_URL_HERE"
     }
-
     stages {
-
-        stage('Clone Code') {
+        stage('Build') {
             steps {
-                echo "Code already checked out by Jenkins"
+                sh "docker build -t myapp:${BUILD_NUMBER} ."
+                sh "docker tag myapp:${BUILD_NUMBER} myapp:latest"
             }
         }
-
-        stage('Build Docker Image') {
+        stage('Health Check') {
             steps {
                 script {
-                    echo "Building Docker image..."
-                    sh "docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} ."
-                    sh "docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest"
-                }
-            }
-        }
-
-        stage('Health Check on Test Container') {
-            steps {
-                script {
-                    echo "Starting test container..."
-                    sh "docker run -d --name test-${BUILD_NUMBER} -p 5001:5000 ${IMAGE_NAME}:${BUILD_NUMBER}"
+                    sh "docker run -d --name test-${BUILD_NUMBER} -p 5001:5000 myapp:${BUILD_NUMBER}"
                     sh "sleep 5"
-
-                    def status = sh(
-                        script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5001/health",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Health check status: ${status}"
-
+                    def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5001/health", returnStdout: true).trim()
                     sh "docker stop test-${BUILD_NUMBER} && docker rm test-${BUILD_NUMBER}"
-
-                    if (status != "200") {
-                        error("Health check FAILED! Got status: ${status}")
-                    }
-
-                    echo "Health check PASSED!"
+                    if (status != "200") { error("FAILED") }
+                    echo "PASSED!"
                 }
             }
         }
-
-        stage('Deploy Live') {
+        stage('Deploy') {
             steps {
-                script {
-                    echo "Deploying to production..."
-                    sh """
-                        docker stop ${CONTAINER_NAME} || true
-                        docker rm ${CONTAINER_NAME} || true
-                        docker run -d --name ${CONTAINER_NAME} -p 5000:5000 ${IMAGE_NAME}:${BUILD_NUMBER}
-                    """
-                    echo "App is LIVE at port 5000!"
-                }
+                sh "docker stop myapp-live || true"
+                sh "docker rm myapp-live || true"
+                sh "docker run -d --name myapp-live -p 5000:5000 myapp:${BUILD_NUMBER}"
             }
         }
     }
-
     post {
-        success {
-            sh """
-                curl -X POST -H 'Content-type: application/json' \
-                --data '{"text":"✅ SUCCESS! Build #${BUILD_NUMBER} deployed! App is live!"}' \
-                ${SLACK_WEBHOOK}
-            """
-        }
-
+        success { echo "DEPLOYED SUCCESSFULLY!" }
         failure {
-            script {
-                echo "FAILED! Rolling back..."
-                sh """
-                    docker stop ${CONTAINER_NAME} || true
-                    docker rm ${CONTAINER_NAME} || true
-                    docker run -d --name ${CONTAINER_NAME} -p 5000:5000 ${IMAGE_NAME}:latest || true
-                """
-                sh """
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text":"❌ FAILED! Build #${BUILD_NUMBER} rolled back to last working version!"}' \
-                    ${SLACK_WEBHOOK}
-                """
-            }
+            sh "docker stop myapp-live || true"
+            sh "docker rm myapp-live || true"
+            sh "docker run -d --name myapp-live -p 5000:5000 myapp:latest || true"
+            echo "ROLLED BACK!"
         }
     }
 }
